@@ -156,16 +156,6 @@ def _parse_lines(lines: Iterable[str]) -> list[dict[str, Any] | None]:
     return entries
 
 
-def pick_entries(
-    entries: list[dict[str, Any]], pick_count: int | None
-) -> list[dict[str, Any]]:
-    if pick_count is None or pick_count <= 0:
-        return entries
-    if len(entries) <= pick_count:
-        return entries
-    return entries[-pick_count:]
-
-
 def format_entries(entries: Iterable[dict[str, Any]]) -> str:
     lines: list[str] = []
     for entry in entries:

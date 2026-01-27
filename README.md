@@ -29,12 +29,11 @@ SYSTEM_PROMPT_DEFAULT=（未指定時のベース、任意）
 SYSTEM_PROMPT_SPECIAL=（未指定時の特別ユーザー文言、任意）
 SPECIAL_USER_ID=
 DATA_DIR=data
-RECALL_LINES_DEFAULT=50
-RECALL_PICK_DEFAULT=10
 AUTO_RECALL_LINES=40
-AUTO_RECALL_PICK=8
 AUTO_RECALL_KEYWORDS=前に,前回,以前,昔,過去,覚えて,覚えてる,記憶,ログ,履歴
 BOOTSTRAP_LOG_LINES=500
+BOT_STATUS_MESSAGE=メンションしてhelpって打ってください♡
+RECALL_MAX_LINES=30
 OK_1=
 OK_2=
 LOG_LEVEL=DEBUG
@@ -52,7 +51,7 @@ uv run bot
 - DM には反応しません。
 - 会話メモリはチャンネル/スレッド単位で共有されます。
 - 再起動時は `BOOTSTRAP_LOG_LINES` 行ぶんのログから直近メモリを復元します。
-- `@bot /recall 50 10` のように過去ログを読み出すと、末尾50行から10行を抜粋して文脈に追加します。
+- `@bot /recall 10` のように過去ログを読み出すと、末尾10行を文脈に追加します。
 - 自動リコールはキーワード検出で末尾ログを読み込みます。
 - `@bot しゆいって呼称してほしい` のように呼び方を覚えます。指定がなければディスプレイネームを使います。
 - 呼称に「しゆい」は特別ユーザー以外は設定できません。

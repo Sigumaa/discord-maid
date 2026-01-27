@@ -32,13 +32,12 @@ class Settings:
     system_prompt: str
     special_user_id: int
     data_dir: str
-    recall_lines_default: int
-    recall_pick_default: int
     auto_recall_lines: int
-    auto_recall_pick: int
     auto_recall_keywords: list[str]
     allowed_guild_ids: set[int]
     bootstrap_log_lines: int
+    status_message: str | None
+    recall_max_lines: int
 
 
 def _resolve_api_host() -> str:
@@ -106,10 +105,7 @@ def load_settings() -> Settings:
     else:
         system_prompt = system_prompt_env
     data_dir = os.getenv("DATA_DIR", "data")
-    recall_lines_default = int(os.getenv("RECALL_LINES_DEFAULT", "50"))
-    recall_pick_default = int(os.getenv("RECALL_PICK_DEFAULT", "10"))
     auto_recall_lines = int(os.getenv("AUTO_RECALL_LINES", "40"))
-    auto_recall_pick = int(os.getenv("AUTO_RECALL_PICK", "8"))
     keywords_env = os.getenv(
         "AUTO_RECALL_KEYWORDS",
         "前に,前回,以前,昔,過去,覚えて,覚えてる,記憶,ログ,履歴",
@@ -117,6 +113,10 @@ def load_settings() -> Settings:
     auto_recall_keywords = [k.strip() for k in keywords_env.split(",") if k.strip()]
     allowed_guild_ids = _load_allowed_guild_ids()
     bootstrap_log_lines = int(os.getenv("BOOTSTRAP_LOG_LINES", "500"))
+    status_message = os.getenv("BOT_STATUS_MESSAGE")
+    if status_message is not None and status_message.strip() == "":
+        status_message = None
+    recall_max_lines = int(os.getenv("RECALL_MAX_LINES", "30"))
     return Settings(
         discord_bot_token=discord_bot_token,
         x_api_key=x_api_key,
@@ -128,11 +128,10 @@ def load_settings() -> Settings:
         system_prompt=system_prompt,
         special_user_id=special_user_id,
         data_dir=data_dir,
-        recall_lines_default=recall_lines_default,
-        recall_pick_default=recall_pick_default,
         auto_recall_lines=auto_recall_lines,
-        auto_recall_pick=auto_recall_pick,
         auto_recall_keywords=auto_recall_keywords,
         allowed_guild_ids=allowed_guild_ids,
         bootstrap_log_lines=bootstrap_log_lines,
+        status_message=status_message,
+        recall_max_lines=recall_max_lines,
     )

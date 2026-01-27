@@ -1,6 +1,6 @@
 import asyncio
 
-from bot.log_store import append_logs, pick_entries, read_user_log_tail
+from bot.log_store import append_logs, read_user_log_tail
 
 
 def test_log_store_roundtrip(tmp_path) -> None:
@@ -20,4 +20,3 @@ def test_log_store_roundtrip(tmp_path) -> None:
 
     assert len(tail) == 1
     assert tail[0]["content"] == "hello"
-    assert pick_entries(tail, 1) == tail

@@ -13,7 +13,6 @@ from .grok_client import GrokClient
 from .log_store import (
     append_logs,
     build_entry,
-    pick_entries,
     read_user_log_tail,
     read_user_meta,
     write_user_meta,
@@ -39,12 +38,9 @@ def _conversation_key(message: discord.Message) -> ConversationKey:
     return (guild_id, message.channel.id)
 
 
-_RECALL_PATTERN = re.compile(
-    r"(?:^|\\s)(?:/|#)?recall\\s+(\\d+)(?:\\s+(\\d+))?",
-    re.IGNORECASE,
-)
+_RECALL_PATTERN = re.compile(r"(?:^|\\s)(?:/|#)?recall\\s+(\\d+)", re.IGNORECASE)
 _SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\\b", re.IGNORECASE)
-_HELP_PATTERN = re.compile(r"^(?:/|#)?(help|ヘルプ|使い方)\\b", re.IGNORECASE)
+_HELP_PATTERN = re.compile(r"(help|ヘルプ|使い方)", re.IGNORECASE)
 
 _PREFERRED_NAME_PATTERNS = [
     re.compile(r"(.+?)って呼んでほしい"),
@@ -58,13 +54,12 @@ _PREFERRED_NAME_PATTERNS = [
 ]
 
 
-def _extract_recall_request(content: str) -> tuple[int, int | None] | None:
+def _extract_recall_request(content: str) -> int | None:
     match = _RECALL_PATTERN.search(content)
     if not match:
         return None
     lines = int(match.group(1))
-    pick = int(match.group(2)) if match.group(2) else None
-    return (lines, pick)
+    return lines
 
 
 def _strip_recall_command(content: str) -> str:
@@ -120,6 +115,10 @@ class GrokDiscordBot(discord.Client):
             return
         logger = logging.getLogger(__name__)
         logger.info("Logged in as %s (id: %s)", self.user, self.user.id)
+        if self._settings.status_message:
+            await self.change_presence(
+                activity=discord.Game(self._settings.status_message)
+            )
         logger.info(
             "Guilds joined: %s",
             ", ".join(str(guild.id) for guild in self.guilds) or "(none)",
@@ -206,7 +205,7 @@ class GrokDiscordBot(discord.Client):
                     )
                 return
 
-            if _HELP_PATTERN.match(content):
+            if _HELP_PATTERN.search(content):
                 reply = self._help_text()
                 await message.reply(reply, mention_author=False)
                 await self._log_exchange(
@@ -256,14 +255,18 @@ class GrokDiscordBot(discord.Client):
                 self._memory.append(key, {"role": "assistant", "content": reply})
                 return
 
-            recall_request = _extract_recall_request(content)
-            if recall_request is not None:
+            recall_lines = _extract_recall_request(content)
+            if recall_lines is not None:
                 content = _strip_recall_command(content)
                 if not content:
                     content = "ログを読み取って要点だけ教えてください。"
+                if recall_lines < 1:
+                    recall_lines = 1
+                if message.author.id != self._settings.special_user_id:
+                    recall_lines = min(recall_lines, self._settings.recall_max_lines)
             history = self._memory.get(key)
             recall_context = await self._maybe_recall_context(
-                message, content, recall_request
+                message, content, recall_lines
             )
             preferred_name = await self._get_preferred_name(message)
             call_name = resolve_call_name(
@@ -332,7 +335,8 @@ class GrokDiscordBot(discord.Client):
             "使い方",
             "- メンション: @bot こんにちは",
             "- 呼称指定: @bot 〇〇って呼称してほしい",
-            "- 過去ログ: @bot /recall 50 10（末尾50行から10行抽出）",
+            "- 過去ログ: @bot /recall 10（末尾10行を追加）",
+            f"- /recall 上限: {self._settings.recall_max_lines}（特別ユーザーは無制限）",
             f"- 自動リコール: {auto_keywords}",
         ]
         return "\n".join(lines)
@@ -366,24 +370,18 @@ class GrokDiscordBot(discord.Client):
         self,
         message: discord.Message,
         content: str,
-        recall_request: tuple[int, int | None] | None,
+        recall_lines: int | None,
     ) -> str | None:
-        if recall_request is not None:
-            lines, pick = recall_request
-        else:
-            lines = None
-            pick = None
+        lines = recall_lines
 
-        auto_recall = recall_request is None and _has_auto_recall_trigger(
+        auto_recall = recall_lines is None and _has_auto_recall_trigger(
             content, self._settings.auto_recall_keywords
         )
-        if recall_request is None and not auto_recall:
+        if recall_lines is None and not auto_recall:
             return None
 
         if lines is None:
             lines = self._settings.auto_recall_lines
-        if pick is None:
-            pick = self._settings.auto_recall_pick
 
         entries = await read_user_log_tail(
             self._settings.data_dir,
@@ -391,10 +389,9 @@ class GrokDiscordBot(discord.Client):
             message.author.id,
             lines,
         )
-        selected = pick_entries(entries, pick)
-        if not selected:
+        if not entries:
             return None
-        block = self._format_recall_entries(selected)
+        block = self._format_recall_entries(entries)
         return f"以下は過去ログの抜粋です。\\n{block}"
 
     def _format_recall_entries(self, entries: list[dict[str, object]]) -> str:
