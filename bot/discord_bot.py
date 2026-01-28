@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Iterable, Protocol, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
 import discord
 from discord import app_commands
@@ -30,7 +30,28 @@ def _strip_bot_mention(content: str, bot_id: int) -> str:
 def _chunk_text(text: str, limit: int = 1900) -> list[str]:
     if not text:
         return [""]
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
+    if limit <= 0:
+        return [text]
+    lines = text.splitlines()
+    if not lines:
+        return [text[:limit]]
+    footer_line = lines[-1]
+    body = "\n".join(lines[:-1]).rstrip("\n")
+    footer = footer_line if footer_line.startswith("-# ") else ""
+    if not footer:
+        body = text
+    if not footer:
+        return [body[i : i + limit] for i in range(0, len(body), limit)]
+    if len(body) <= limit - (len(footer) + 1):
+        return [f"{body}\n{footer}".rstrip()]
+    body_limit = max(1, limit - (len(footer) + 1))
+    body_chunks = [body[i : i + body_limit] for i in range(0, len(body), body_limit)]
+    result: list[str] = []
+    if len(body_chunks) > 1:
+        result.extend(body_chunks[:-1])
+    tail = body_chunks[-1] if body_chunks else ""
+    result.append(f"{tail}\n{footer}".rstrip())
+    return [chunk.rstrip() for chunk in result if chunk.strip()]
 
 
 def _conversation_key(message: discord.Message) -> ConversationKey:
@@ -41,11 +62,15 @@ def _conversation_key(message: discord.Message) -> ConversationKey:
 _RECALL_PATTERN = re.compile(r"(?:^|\s)(?:/|#)?recall\s+(\d+)", re.IGNORECASE)
 _SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\b", re.IGNORECASE)
 _HELP_PATTERN = re.compile(r"(help|ヘルプ|使い方)", re.IGNORECASE)
-_SEARCH_PREFIX_PATTERN = re.compile(r"^(?:/|#)?(web|x(?:search)?)\b", re.IGNORECASE)
+_TOOL_PREFIX_PATTERN = re.compile(r"^(?:/|#)?(web|x(?:search)?|code)\b", re.IGNORECASE)
 _CLEAR_PATTERN = re.compile(r"^(?:/|#)clear$", re.IGNORECASE)
 _IMAGE_LIMIT = 2
 _IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+_CODE_PROMPT = (
+    "この入力では code_execution ツールを必ず使う。"
+    "ツールで計算・検証した結果を根拠に回答する。"
+)
 
 _PREFERRED_NAME_PATTERNS = [
     re.compile(r"(.+?)って呼んでほしい"),
@@ -71,21 +96,24 @@ def _strip_recall_command(content: str) -> str:
     return _RECALL_PATTERN.sub("", content).strip()
 
 
-def _extract_search_request(content: str) -> tuple[bool, bool, str]:
+def _extract_tool_request(content: str) -> tuple[bool, bool, bool, str]:
     remaining = content.strip()
     web_requested = False
     x_requested = False
+    code_requested = False
     while remaining:
-        match = _SEARCH_PREFIX_PATTERN.match(remaining)
+        match = _TOOL_PREFIX_PATTERN.match(remaining)
         if not match:
             break
         kind = match.group(1).lower()
         if kind.startswith("web"):
             web_requested = True
-        else:
+        elif kind.startswith("x"):
             x_requested = True
+        else:
+            code_requested = True
         remaining = remaining[match.end() :].strip()
-    return web_requested, x_requested, remaining
+    return web_requested, x_requested, code_requested, remaining
 
 
 def _is_clear_request(content: str) -> bool:
@@ -106,6 +134,40 @@ def _extract_preferred_name(content: str) -> str | None:
         if candidate:
             return candidate
     return None
+
+
+def _format_tool_calls(tool_calls: Sequence[Any] | None) -> list[str]:
+    if not tool_calls:
+        return []
+    formatted: list[str] = []
+    for call in tool_calls:
+        if isinstance(call, str):
+            formatted.append(call)
+            continue
+        name = getattr(getattr(call, "function", None), "name", None)
+        args = getattr(getattr(call, "function", None), "arguments", None)
+        if name is not None and args is not None:
+            formatted.append(f"{name}({args})")
+        else:
+            formatted.append(str(call))
+    return formatted
+
+
+def _format_tool_footer(
+    *,
+    tool_calls: Sequence[Any] | None,
+    steps: int | None = None,
+    citations: int | None = None,
+) -> str:
+    tool_list = _format_tool_calls(tool_calls)
+    tools_text = ", ".join(dict.fromkeys(tool_list)) or "none"
+    lines = [f"tools: {tools_text}"]
+    if steps is not None:
+        lines.append(f"steps: {steps}")
+    if citations:
+        lines.append(f"citations: {citations}")
+    joined = " / ".join(lines)
+    return f"-# {joined}"
 
 
 class AttachmentLike(Protocol):
@@ -305,39 +367,42 @@ class GrokDiscordBot(discord.Client):
                 )
                 return
 
-            web_requested, x_requested, content = _extract_search_request(content)
-            search_requested = web_requested or x_requested
-            if search_requested:
-                if not content:
-                    reply = "検索したい内容を書いてください。"
-                    await message.reply(reply, mention_author=False)
-                    await self._log_exchange(
-                        message=message,
-                        user_content="",
-                        assistant_content=reply,
-                    )
-                    preferred_name = await self._get_preferred_name(message)
-                    call_name = resolve_call_name(
-                        user_id=message.author.id,
-                        special_user_id=self._settings.special_user_id,
-                        display_name=message.author.display_name,
-                        preferred_name=preferred_name,
-                    )
-                    self._memory.append(
-                        key,
-                        {
-                            "role": "user",
-                            "content": self._format_user_message(
-                                call_name, message.author.id, ""
-                            ),
-                        },
-                    )
-                    self._memory.append(key, {"role": "assistant", "content": reply})
-                    return
+            web_requested, x_requested, code_requested, content = _extract_tool_request(
+                content
+            )
+            prefixed = web_requested or x_requested or code_requested
+            if prefixed and not content:
+                reply = "実行したい内容を書いてください。"
+                await message.reply(reply, mention_author=False)
+                await self._log_exchange(
+                    message=message,
+                    user_content="",
+                    assistant_content=reply,
+                )
+                preferred_name = await self._get_preferred_name(message)
+                call_name = resolve_call_name(
+                    user_id=message.author.id,
+                    special_user_id=self._settings.special_user_id,
+                    display_name=message.author.display_name,
+                    preferred_name=preferred_name,
+                )
+                self._memory.append(
+                    key,
+                    {
+                        "role": "user",
+                        "content": self._format_user_message(
+                            call_name, message.author.id, ""
+                        ),
+                    },
+                )
+                self._memory.append(key, {"role": "assistant", "content": reply})
+                return
+            if prefixed:
                 logger.info(
-                    "Search requested web=%s x=%s query=%s user=%s channel=%s guild=%s",
+                    "Tool prefixes detected web=%s x=%s code=%s query=%s user=%s channel=%s guild=%s",
                     web_requested,
                     x_requested,
+                    code_requested,
                     content,
                     message.author.id,
                     message.channel.id,
@@ -396,6 +461,7 @@ class GrokDiscordBot(discord.Client):
                 recall_context,
                 message.author.id,
                 call_name,
+                extra_system_prompts=[_CODE_PROMPT] if code_requested else None,
             )
             try:
                 async with message.channel.typing():
@@ -405,16 +471,24 @@ class GrokDiscordBot(discord.Client):
                         message.channel.id,
                         message.guild.id if message.guild else "dm",
                     )
-                    reply = await self._grok.chat(
+                    result = await self._grok.chat_with_meta(
                         messages,
                         user_id=str(message.author.id),
-                        enable_web_search=web_requested,
-                        enable_x_search=x_requested,
+                        enable_web_search=True,
+                        enable_x_search=True,
+                        enable_code_execution=True,
                         web_search_allowed_domains=self._settings.web_search_allowed_domains,
                         web_search_excluded_domains=self._settings.web_search_excluded_domains,
                         web_search_country=self._settings.web_search_country,
                         image_urls=image_urls or None,
                     )
+                    footer = _format_tool_footer(
+                        tool_calls=result.tool_calls,
+                        citations=len(result.citations)
+                        if isinstance(result.citations, list)
+                        else None,
+                    )
+                    reply = f"{result.content}\n{footer}".strip()
                 logger.info("Grok response received for user=%s", message.author.id)
             except Exception:
                 logger.exception("Grok API call failed")
@@ -460,8 +534,10 @@ class GrokDiscordBot(discord.Client):
             "- 過去ログ: @bot /recall 10（末尾10行を追加）",
             f"- /recall 上限: {self._settings.recall_max_lines}（特別ユーザーは無制限）",
             "- 会話履歴クリア: @bot /clear",
+            "- ツール: Web/X/コードは常時有効（/web /x /code は明示指示用）",
             "- Web検索: @bot /web 質問内容",
             "- X検索: @bot /x 質問内容",
+            "- コード実行: @bot /code 計算内容",
             "- 画像入力: メンション + 画像（最大2枚）",
             f"- 自動リコール: {auto_keywords}",
         ]
@@ -474,10 +550,15 @@ class GrokDiscordBot(discord.Client):
         recall_context: str | None,
         user_id: int,
         call_name: str,
+        extra_system_prompts: Sequence[str] | None = None,
     ) -> list[ChatMessage]:
         messages: list[ChatMessage] = [
             {"role": "system", "content": self._settings.system_prompt}
         ]
+        if extra_system_prompts:
+            messages.extend(
+                {"role": "system", "content": prompt} for prompt in extra_system_prompts
+            )
         if recall_context:
             content = f"{recall_context}\n\n{content}"
         messages.extend(history)
