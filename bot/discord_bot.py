@@ -64,6 +64,7 @@ _SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\b", re.IGNORECASE)
 _HELP_PATTERN = re.compile(r"(help|ヘルプ|使い方)", re.IGNORECASE)
 _TOOL_PREFIX_PATTERN = re.compile(r"^(?:/|#)?(web|x(?:search)?|code)\b", re.IGNORECASE)
 _CLEAR_PATTERN = re.compile(r"^(?:/|#)clear$", re.IGNORECASE)
+_FRESH_PATTERN = re.compile(r"^(?:/|#)?fresh\b", re.IGNORECASE)
 _IMAGE_LIMIT = 2
 _IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
@@ -120,6 +121,14 @@ def _is_clear_request(content: str) -> bool:
     return _CLEAR_PATTERN.match(content.strip()) is not None
 
 
+def _extract_fresh_request(content: str) -> str | None:
+    stripped = content.strip()
+    match = _FRESH_PATTERN.match(stripped)
+    if not match:
+        return None
+    return stripped[match.end() :].strip()
+
+
 def _has_auto_recall_trigger(content: str, keywords: list[str]) -> bool:
     return any(keyword in content for keyword in keywords)
 
@@ -141,16 +150,21 @@ def _format_tool_calls(tool_calls: Sequence[Any] | None) -> list[str]:
         return []
     formatted: list[str] = []
     for call in tool_calls:
+        name: str | None
         if isinstance(call, str):
-            formatted.append(call)
-            continue
-        name = getattr(getattr(call, "function", None), "name", None)
-        args = getattr(getattr(call, "function", None), "arguments", None)
-        if name is not None and args is not None:
-            formatted.append(f"{name}({args})")
+            name = call
         else:
-            formatted.append(str(call))
-    return formatted
+            name = getattr(getattr(call, "function", None), "name", None)
+            if name is None:
+                name = str(call)
+        if not name:
+            continue
+        if name.lower() == "none":
+            continue
+        base = name.split("(", 1)[0].strip()
+        if base:
+            formatted.append(base)
+    return list(dict.fromkeys(formatted))
 
 
 def _format_tool_footer(
@@ -160,7 +174,9 @@ def _format_tool_footer(
     citations: int | None = None,
 ) -> str:
     tool_list = _format_tool_calls(tool_calls)
-    tools_text = ", ".join(dict.fromkeys(tool_list)) or "none"
+    if not tool_list and citations:
+        tool_list = ["search"]
+    tools_text = ", ".join(tool_list) or "none"
     lines = [f"tools: {tools_text}"]
     if steps is not None:
         lines.append(f"steps: {steps}")
@@ -211,6 +227,7 @@ class GrokDiscordBot(discord.Client):
         self._memory = memory
         self._locks: dict[ConversationKey, asyncio.Lock] = {}
         self._synced = False
+        self._announced_start = False
         self.tree = app_commands.CommandTree(self)
         self.tree.add_command(
             app_commands.Command(
@@ -221,6 +238,9 @@ class GrokDiscordBot(discord.Client):
         )
 
     async def close(self) -> None:
+        await self._send_announce(
+            kind="stop", fallback=self._settings.announce_stop_message
+        )
         await self._grok.aclose()
         await super().close()
 
@@ -229,6 +249,11 @@ class GrokDiscordBot(discord.Client):
             return
         logger = logging.getLogger(__name__)
         logger.info("Logged in as %s (id: %s)", self.user, self.user.id)
+        if not self._announced_start:
+            await self._send_announce(
+                kind="start", fallback=self._settings.announce_start_message
+            )
+            self._announced_start = True
         if self._settings.status_message:
             await self.change_presence(
                 activity=discord.Game(self._settings.status_message)
@@ -256,6 +281,85 @@ class GrokDiscordBot(discord.Client):
                 except discord.HTTPException:
                     logger.exception("Failed to sync commands for guild=%s", guild_id)
             self._synced = True
+
+    async def _send_announce(self, *, kind: str, fallback: str | None) -> None:
+        channel_id = self._settings.announce_channel_id
+        guild_id = self._settings.announce_guild_id
+        if channel_id is None:
+            return
+        if guild_id is not None and guild_id not in self._settings.allowed_guild_ids:
+            return
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except discord.NotFound:
+                logging.getLogger(__name__).warning(
+                    "Announce channel not found channel=%s", channel_id
+                )
+                return
+            except discord.Forbidden:
+                logging.getLogger(__name__).warning(
+                    "No permission to announce in channel=%s", channel_id
+                )
+                return
+            except discord.HTTPException:
+                logging.getLogger(__name__).exception(
+                    "Failed to fetch announce channel=%s", channel_id
+                )
+                return
+        try:
+            if not isinstance(channel, (discord.abc.Messageable, discord.Thread)):
+                logging.getLogger(__name__).warning(
+                    "Announce channel is not messageable channel=%s", channel_id
+                )
+                return
+            text = await self._generate_announce_message(kind, fallback)
+            if not text:
+                return
+            await channel.send(text)
+        except discord.Forbidden:
+            logging.getLogger(__name__).warning(
+                "No permission to announce in channel=%s", channel_id
+            )
+        except discord.HTTPException:
+            logging.getLogger(__name__).exception(
+                "Failed to send announce message channel=%s", channel_id
+            )
+
+    async def _generate_announce_message(
+        self, kind: str, fallback: str | None
+    ) -> str | None:
+        if fallback is None:
+            fallback = ""
+        instructions = (
+            "Discordの稼働通知メッセージを1行で作成する。"
+            "口調は既存の人格設定に合わせる。"
+            "宛名は必ず「しゆい様」。"
+            "語尾は可愛く、感情がにじむ。"
+            "簡潔で自然な日本語にする。"
+            "敬語は崩さない。"
+            "絵文字は控えめに。"
+            "メッセージ本文だけを返す。"
+        )
+        if kind == "start":
+            task = "起動通知。起きた旨を伝える。例: しゆい様！今日は起きましたわ！"
+        else:
+            task = "終了通知。眠る旨を伝える。例: しゆい様！今日はもう寝ますわ！"
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": self._settings.system_prompt},
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": task},
+        ]
+        try:
+            text = await self._grok.chat(
+                messages,
+                temperature_override=1.2,
+            )
+            return text.strip()
+        except Exception:
+            logging.getLogger(__name__).exception("Announce generation failed")
+            return fallback or None
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
@@ -366,6 +470,21 @@ class GrokDiscordBot(discord.Client):
                     assistant_content=reply,
                 )
                 return
+
+            fresh_request = _extract_fresh_request(content)
+            if fresh_request is not None:
+                if not fresh_request:
+                    reply = "内容を書いてください。"
+                    await message.reply(reply, mention_author=False)
+                    return
+                self._memory.clear(key)
+                logger.info(
+                    "Fresh requested user=%s channel=%s guild=%s",
+                    message.author.id,
+                    message.channel.id,
+                    message.guild.id,
+                )
+                content = fresh_request
 
             web_requested, x_requested, code_requested, content = _extract_tool_request(
                 content
@@ -534,6 +653,7 @@ class GrokDiscordBot(discord.Client):
             "- 過去ログ: @bot /recall 10（末尾10行を追加）",
             f"- /recall 上限: {self._settings.recall_max_lines}（特別ユーザーは無制限）",
             "- 会話履歴クリア: @bot /clear",
+            "- クリアして再質問: @bot /fresh 質問内容",
             "- ツール: Web/X/コードは常時有効（/web /x /code は明示指示用）",
             "- Web検索: @bot /web 質問内容",
             "- X検索: @bot /x 質問内容",

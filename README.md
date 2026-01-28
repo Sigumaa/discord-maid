@@ -37,6 +37,10 @@ RECALL_MAX_LINES=30
 WEB_SEARCH_ALLOWED_DOMAINS=
 WEB_SEARCH_EXCLUDED_DOMAINS=
 WEB_SEARCH_COUNTRY=JP
+ANNOUNCE_GUILD_ID=683939861539192860
+ANNOUNCE_CHANNEL_ID=929745598637309973
+ANNOUNCE_START_MESSAGE=起床しました。
+ANNOUNCE_STOP_MESSAGE=私はもう寝ますわ、、、
 OK_1=
 OK_2=
 LOG_LEVEL=DEBUG
@@ -56,7 +60,9 @@ uv run bot
 - 再起動時は `BOOTSTRAP_LOG_LINES` 行ぶんのログから直近メモリを復元します。
 - `@bot /recall 10` のように過去ログを読み出すと、末尾10行を文脈に追加します。
 - `@bot /clear` でこのチャンネルの会話履歴（メモリ）をクリアします（ログは保持）。
+- `@bot /fresh 質問内容` で履歴クリア後に同じ内容を即送信します。
 - Web/X/コード実行ツールは常時有効です（`/web` `/x` `/code` は明示指示用）。
+- 起動/終了通知は LLM が毎回生成します（失敗時は ANNOUNCE_* をフォールバック）。
 - 自動リコールはキーワード検出で末尾ログを読み込みます。
 - `@bot しゆいって呼称してほしい` のように呼び方を覚えます。指定がなければディスプレイネームを使います。
 - 呼称に「しゆい」は特別ユーザー以外は設定できません。

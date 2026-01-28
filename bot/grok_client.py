@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -37,6 +38,7 @@ class GrokClient:
         enable_web_search: bool = False,
         enable_x_search: bool = False,
         enable_code_execution: bool = False,
+        temperature_override: float | None = None,
         web_search_allowed_domains: list[str] | None = None,
         web_search_excluded_domains: list[str] | None = None,
         web_search_country: str | None = None,
@@ -49,6 +51,7 @@ class GrokClient:
             enable_web_search=enable_web_search,
             enable_x_search=enable_x_search,
             enable_code_execution=enable_code_execution,
+            temperature_override=temperature_override,
             web_search_allowed_domains=web_search_allowed_domains,
             web_search_excluded_domains=web_search_excluded_domains,
             web_search_country=web_search_country,
@@ -65,6 +68,7 @@ class GrokClient:
         enable_web_search: bool = False,
         enable_x_search: bool = False,
         enable_code_execution: bool = False,
+        temperature_override: float | None = None,
         web_search_allowed_domains: list[str] | None = None,
         web_search_excluded_domains: list[str] | None = None,
         web_search_country: str | None = None,
@@ -77,6 +81,7 @@ class GrokClient:
             enable_web_search=enable_web_search,
             enable_x_search=enable_x_search,
             enable_code_execution=enable_code_execution,
+            temperature_override=temperature_override,
             web_search_allowed_domains=web_search_allowed_domains,
             web_search_excluded_domains=web_search_excluded_domains,
             web_search_country=web_search_country,
@@ -97,6 +102,7 @@ class GrokClient:
         enable_web_search: bool,
         enable_x_search: bool,
         enable_code_execution: bool,
+        temperature_override: float | None,
         web_search_allowed_domains: list[str] | None,
         web_search_excluded_domains: list[str] | None,
         web_search_country: str | None,
@@ -109,10 +115,15 @@ class GrokClient:
         client = self._client
         if client is None:
             raise RuntimeError("Grok client was not initialized")
+        temperature = (
+            temperature_override
+            if temperature_override is not None
+            else self._temperature
+        )
         logger.debug(
             "Grok request model=%s temp=%s max_tokens=%s messages=%s user_id=%s",
             self._model,
-            self._temperature,
+            temperature,
             self._max_tokens,
             len(chat_messages),
             user_id,
@@ -128,7 +139,7 @@ class GrokClient:
         chat = client.chat.create(
             model=self._model,
             messages=chat_messages,
-            temperature=self._temperature,
+            temperature=temperature,
             max_tokens=self._max_tokens,
             user=user_id,
             tools=tools,
@@ -153,7 +164,9 @@ class GrokClient:
 
     async def aclose(self) -> None:
         if self._client is not None:
-            self._client.close()
+            result = self._client.close()
+            if inspect.isawaitable(result):
+                await result
 
     async def _ensure_client(self) -> None:
         if self._client is not None:

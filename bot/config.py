@@ -41,6 +41,10 @@ class Settings:
     web_search_allowed_domains: list[str]
     web_search_excluded_domains: list[str]
     web_search_country: str | None
+    announce_guild_id: int | None
+    announce_channel_id: int | None
+    announce_start_message: str | None
+    announce_stop_message: str | None
 
 
 def _resolve_api_host() -> str:
@@ -132,6 +136,14 @@ def load_settings() -> Settings:
     web_search_country = os.getenv("WEB_SEARCH_COUNTRY")
     if web_search_country is not None and web_search_country.strip() == "":
         web_search_country = None
+    announce_guild_id = _optional_int(
+        os.getenv("ANNOUNCE_GUILD_ID", "683939861539192860")
+    )
+    announce_channel_id = _optional_int(
+        os.getenv("ANNOUNCE_CHANNEL_ID", "929745598637309973")
+    )
+    announce_start_message = os.getenv("ANNOUNCE_START_MESSAGE", "起床しました。")
+    announce_stop_message = os.getenv("ANNOUNCE_STOP_MESSAGE", "私はもう寝ますわ、、、")
     return Settings(
         discord_bot_token=discord_bot_token,
         x_api_key=x_api_key,
@@ -152,4 +164,8 @@ def load_settings() -> Settings:
         web_search_allowed_domains=web_search_allowed_domains,
         web_search_excluded_domains=web_search_excluded_domains,
         web_search_country=web_search_country,
+        announce_guild_id=announce_guild_id,
+        announce_channel_id=announce_channel_id,
+        announce_start_message=announce_start_message,
+        announce_stop_message=announce_stop_message,
     )
