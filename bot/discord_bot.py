@@ -42,6 +42,7 @@ _RECALL_PATTERN = re.compile(r"(?:^|\s)(?:/|#)?recall\s+(\d+)", re.IGNORECASE)
 _SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\b", re.IGNORECASE)
 _HELP_PATTERN = re.compile(r"(help|ヘルプ|使い方)", re.IGNORECASE)
 _SEARCH_PREFIX_PATTERN = re.compile(r"^(?:/|#)?(web|x(?:search)?)\b", re.IGNORECASE)
+_CLEAR_PATTERN = re.compile(r"^(?:/|#)clear$", re.IGNORECASE)
 _IMAGE_LIMIT = 2
 _IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
@@ -85,6 +86,10 @@ def _extract_search_request(content: str) -> tuple[bool, bool, str]:
             x_requested = True
         remaining = remaining[match.end() :].strip()
     return web_requested, x_requested, remaining
+
+
+def _is_clear_request(content: str) -> bool:
+    return _CLEAR_PATTERN.match(content.strip()) is not None
 
 
 def _has_auto_recall_trigger(content: str, keywords: list[str]) -> bool:
@@ -289,6 +294,17 @@ class GrokDiscordBot(discord.Client):
                 self._memory.append(key, {"role": "assistant", "content": reply})
                 return
 
+            if _is_clear_request(content):
+                self._memory.clear(key)
+                reply = "このチャンネルの会話履歴をクリアしました。ログは保持されます。"
+                await message.reply(reply, mention_author=False)
+                await self._log_exchange(
+                    message=message,
+                    user_content=content,
+                    assistant_content=reply,
+                )
+                return
+
             web_requested, x_requested, content = _extract_search_request(content)
             search_requested = web_requested or x_requested
             if search_requested:
@@ -443,6 +459,7 @@ class GrokDiscordBot(discord.Client):
             "- 呼称指定: @bot 〇〇って呼称してほしい",
             "- 過去ログ: @bot /recall 10（末尾10行を追加）",
             f"- /recall 上限: {self._settings.recall_max_lines}（特別ユーザーは無制限）",
+            "- 会話履歴クリア: @bot /clear",
             "- Web検索: @bot /web 質問内容",
             "- X検索: @bot /x 質問内容",
             "- 画像入力: メンション + 画像（最大2枚）",
