@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Iterable
+from typing import Iterable, Protocol, Sequence
 
 import discord
 from discord import app_commands
@@ -38,9 +38,13 @@ def _conversation_key(message: discord.Message) -> ConversationKey:
     return (guild_id, message.channel.id)
 
 
-_RECALL_PATTERN = re.compile(r"(?:^|\\s)(?:/|#)?recall\\s+(\\d+)", re.IGNORECASE)
-_SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\\b", re.IGNORECASE)
+_RECALL_PATTERN = re.compile(r"(?:^|\s)(?:/|#)?recall\s+(\d+)", re.IGNORECASE)
+_SYNC_PATTERN = re.compile(r"^(?:/|#)?sync\b", re.IGNORECASE)
 _HELP_PATTERN = re.compile(r"(help|ヘルプ|使い方)", re.IGNORECASE)
+_SEARCH_PREFIX_PATTERN = re.compile(r"^(?:/|#)?(web|x(?:search)?)\b", re.IGNORECASE)
+_IMAGE_LIMIT = 2
+_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
 _PREFERRED_NAME_PATTERNS = [
     re.compile(r"(.+?)って呼んでほしい"),
@@ -66,6 +70,23 @@ def _strip_recall_command(content: str) -> str:
     return _RECALL_PATTERN.sub("", content).strip()
 
 
+def _extract_search_request(content: str) -> tuple[bool, bool, str]:
+    remaining = content.strip()
+    web_requested = False
+    x_requested = False
+    while remaining:
+        match = _SEARCH_PREFIX_PATTERN.match(remaining)
+        if not match:
+            break
+        kind = match.group(1).lower()
+        if kind.startswith("web"):
+            web_requested = True
+        else:
+            x_requested = True
+        remaining = remaining[match.end() :].strip()
+    return web_requested, x_requested, remaining
+
+
 def _has_auto_recall_trigger(content: str, keywords: list[str]) -> bool:
     return any(keyword in content for keyword in keywords)
 
@@ -80,6 +101,32 @@ def _extract_preferred_name(content: str) -> str | None:
         if candidate:
             return candidate
     return None
+
+
+class AttachmentLike(Protocol):
+    content_type: str | None
+    filename: str
+    size: int
+    url: str
+
+
+def _is_image_attachment(attachment: AttachmentLike) -> bool:
+    if attachment.content_type and attachment.content_type.startswith("image/"):
+        return True
+    return attachment.filename.lower().endswith(_IMAGE_EXTENSIONS)
+
+
+def _collect_image_urls(attachments: Sequence[AttachmentLike]) -> list[str]:
+    urls: list[str] = []
+    for attachment in attachments:
+        if len(urls) >= _IMAGE_LIMIT:
+            break
+        if not _is_image_attachment(attachment):
+            continue
+        if attachment.size and attachment.size > _IMAGE_MAX_BYTES:
+            continue
+        urls.append(attachment.url)
+    return urls
 
 
 class GrokDiscordBot(discord.Client):
@@ -173,6 +220,16 @@ class GrokDiscordBot(discord.Client):
         content = content.strip()
         logger.debug("Message content length=%s", len(content))
 
+        image_urls = _collect_image_urls(message.attachments)
+        if image_urls:
+            logger.info(
+                "Image attachments count=%s user=%s channel=%s guild=%s",
+                len(image_urls),
+                message.author.id,
+                message.channel.id,
+                message.guild.id,
+            )
+
         key = _conversation_key(message)
         lock = self._locks.setdefault(key, asyncio.Lock())
 
@@ -232,6 +289,45 @@ class GrokDiscordBot(discord.Client):
                 self._memory.append(key, {"role": "assistant", "content": reply})
                 return
 
+            web_requested, x_requested, content = _extract_search_request(content)
+            search_requested = web_requested or x_requested
+            if search_requested:
+                if not content:
+                    reply = "検索したい内容を書いてください。"
+                    await message.reply(reply, mention_author=False)
+                    await self._log_exchange(
+                        message=message,
+                        user_content="",
+                        assistant_content=reply,
+                    )
+                    preferred_name = await self._get_preferred_name(message)
+                    call_name = resolve_call_name(
+                        user_id=message.author.id,
+                        special_user_id=self._settings.special_user_id,
+                        display_name=message.author.display_name,
+                        preferred_name=preferred_name,
+                    )
+                    self._memory.append(
+                        key,
+                        {
+                            "role": "user",
+                            "content": self._format_user_message(
+                                call_name, message.author.id, ""
+                            ),
+                        },
+                    )
+                    self._memory.append(key, {"role": "assistant", "content": reply})
+                    return
+                logger.info(
+                    "Search requested web=%s x=%s query=%s user=%s channel=%s guild=%s",
+                    web_requested,
+                    x_requested,
+                    content,
+                    message.author.id,
+                    message.channel.id,
+                    message.guild.id,
+                )
+
             preferred_name = _extract_preferred_name(content)
             if preferred_name is not None:
                 preferred_name = normalize_preferred_name(preferred_name)
@@ -275,6 +371,9 @@ class GrokDiscordBot(discord.Client):
                 display_name=message.author.display_name,
                 preferred_name=preferred_name,
             )
+            content_for_context = content
+            if image_urls:
+                content_for_context = f"{content}\n（画像{len(image_urls)}枚添付）"
             messages = self._build_messages(
                 history,
                 content,
@@ -291,7 +390,14 @@ class GrokDiscordBot(discord.Client):
                         message.guild.id if message.guild else "dm",
                     )
                     reply = await self._grok.chat(
-                        messages, user_id=str(message.author.id)
+                        messages,
+                        user_id=str(message.author.id),
+                        enable_web_search=web_requested,
+                        enable_x_search=x_requested,
+                        web_search_allowed_domains=self._settings.web_search_allowed_domains,
+                        web_search_excluded_domains=self._settings.web_search_excluded_domains,
+                        web_search_country=self._settings.web_search_country,
+                        image_urls=image_urls or None,
                     )
                 logger.info("Grok response received for user=%s", message.author.id)
             except Exception:
@@ -304,7 +410,7 @@ class GrokDiscordBot(discord.Client):
 
             await self._log_exchange(
                 message=message,
-                user_content=content,
+                user_content=content_for_context,
                 assistant_content=reply,
             )
             self._memory.append(
@@ -312,7 +418,7 @@ class GrokDiscordBot(discord.Client):
                 {
                     "role": "user",
                     "content": self._format_user_message(
-                        call_name, message.author.id, content
+                        call_name, message.author.id, content_for_context
                     ),
                 },
             )
@@ -337,6 +443,9 @@ class GrokDiscordBot(discord.Client):
             "- 呼称指定: @bot 〇〇って呼称してほしい",
             "- 過去ログ: @bot /recall 10（末尾10行を追加）",
             f"- /recall 上限: {self._settings.recall_max_lines}（特別ユーザーは無制限）",
+            "- Web検索: @bot /web 質問内容",
+            "- X検索: @bot /x 質問内容",
+            "- 画像入力: メンション + 画像（最大2枚）",
             f"- 自動リコール: {auto_keywords}",
         ]
         return "\n".join(lines)

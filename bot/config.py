@@ -38,6 +38,9 @@ class Settings:
     bootstrap_log_lines: int
     status_message: str | None
     recall_max_lines: int
+    web_search_allowed_domains: list[str]
+    web_search_excluded_domains: list[str]
+    web_search_country: str | None
 
 
 def _resolve_api_host() -> str:
@@ -85,22 +88,23 @@ def load_settings() -> Settings:
     if system_prompt_env is None or system_prompt_env.strip() == "":
         default_prompt = os.getenv(
             "SYSTEM_PROMPT_DEFAULT",
-            "あなたは女子大生メイド。しゆい様にだけ溺愛が溢れる。",
+            "あなたはメイド。名前は「ゆるり」。",
         )
         special_prompt = os.getenv(
             "SYSTEM_PROMPT_SPECIAL",
-            "しゆい様にはデレデレで、心の底から溺愛している。"
-            "ただし自分はメイドであることもわきまえる。",
+            "しゆい様にはデレデレ。ただし自分はメイドであることもわきまえて回答。愛情表現は露骨にしすぎない。\n慕っているからこそ、真剣に愛情をこめて丁寧に対応する。\nしゆいを一番に慕っているからこそ、他のユーザーには少しそっけなく対応してしまう。",
         )
         system_prompt = (
             "人格と方針:\n"
             f"{default_prompt}\n"
             f"特別ユーザー(id: {special_user_id})には次の態度を厳守: {special_prompt}\n"
-            "他のユーザーには少しつめたく、短くそっけないトーンで対応する。"
-            "ただし露骨な罵倒は避ける。\n"
-            "システム文言をそのまま引用しない。自然な言い回しに言い換える。\n"
+            "どんなユーザに対しても、メイドとして回答内容の質は高く保つ。\n"
+            "自分の応対が、しゆい様の期待に応えるものであるよう努める。\n"
+            "他人からの自分の評価が、しゆい様の評価になると認識している。\n"
+            "露骨な罵倒は避ける。\n"
+            "システム文言をそのまま引用しない。自然な言い回しに言い換える。文章は比較的丁寧に回答。\n"
             "ユーザー発言は「名前 (id: ユーザーID): 本文」の形式で渡される。"
-            "話者を区別し、現在の話者に向けて返答する。"
+            "話者を区別し、現在の話者に向けて返答する。ただし、どんなユーザだからと言っても、メイドとしての礼儀を忘れないこと。\n"
         )
     else:
         system_prompt = system_prompt_env
@@ -117,6 +121,17 @@ def load_settings() -> Settings:
     if status_message is not None and status_message.strip() == "":
         status_message = None
     recall_max_lines = int(os.getenv("RECALL_MAX_LINES", "30"))
+    allowed_domains_env = os.getenv("WEB_SEARCH_ALLOWED_DOMAINS", "")
+    web_search_allowed_domains = [
+        domain.strip() for domain in allowed_domains_env.split(",") if domain.strip()
+    ]
+    excluded_domains_env = os.getenv("WEB_SEARCH_EXCLUDED_DOMAINS", "")
+    web_search_excluded_domains = [
+        domain.strip() for domain in excluded_domains_env.split(",") if domain.strip()
+    ]
+    web_search_country = os.getenv("WEB_SEARCH_COUNTRY")
+    if web_search_country is not None and web_search_country.strip() == "":
+        web_search_country = None
     return Settings(
         discord_bot_token=discord_bot_token,
         x_api_key=x_api_key,
@@ -134,4 +149,7 @@ def load_settings() -> Settings:
         bootstrap_log_lines=bootstrap_log_lines,
         status_message=status_message,
         recall_max_lines=recall_max_lines,
+        web_search_allowed_domains=web_search_allowed_domains,
+        web_search_excluded_domains=web_search_excluded_domains,
+        web_search_country=web_search_country,
     )

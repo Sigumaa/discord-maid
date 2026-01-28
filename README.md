@@ -34,6 +34,9 @@ AUTO_RECALL_KEYWORDS=前に,前回,以前,昔,過去,覚えて,覚えてる,記�
 BOOTSTRAP_LOG_LINES=500
 BOT_STATUS_MESSAGE=メンションしてhelpって打ってください♡
 RECALL_MAX_LINES=30
+WEB_SEARCH_ALLOWED_DOMAINS=
+WEB_SEARCH_EXCLUDED_DOMAINS=
+WEB_SEARCH_COUNTRY=JP
 OK_1=
 OK_2=
 LOG_LEVEL=DEBUG
@@ -56,3 +59,7 @@ uv run bot
 - `@bot しゆいって呼称してほしい` のように呼び方を覚えます。指定がなければディスプレイネームを使います。
 - 呼称に「しゆい」は特別ユーザー以外は設定できません。
 - `/help` か `@bot help` で使い方を表示します。
+- Web検索は `@bot /web 〇〇` で有効になります（許可ドメインは env で制限可能）。
+- X検索は `@bot /x 〇〇` で有効になります。
+- 検索時は出典（ドメイン一覧）と inline citations を返します。
+- 画像はメッセージに添付すると読み取ります（最大2枚、PNG/JPG、10MiB以下）。
