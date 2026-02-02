@@ -1,6 +1,9 @@
 # Grok Discord Bot
 
+# 限界開発鯖で運用されているネタBOTです
+
 Grok (grok-4-1-fast-reasoning) を使うメンション応答の Discord Bot です。
+
 
 ## セットアップ
 

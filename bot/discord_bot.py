@@ -582,6 +582,7 @@ class GrokDiscordBot(discord.Client):
                 call_name,
                 extra_system_prompts=[_CODE_PROMPT] if code_requested else None,
             )
+            reply_body: str | None = None
             try:
                 async with message.channel.typing():
                     logger.info(
@@ -601,13 +602,14 @@ class GrokDiscordBot(discord.Client):
                         web_search_country=self._settings.web_search_country,
                         image_urls=image_urls or None,
                     )
+                    reply_body = result.content.strip()
                     footer = _format_tool_footer(
                         tool_calls=result.tool_calls,
                         citations=len(result.citations)
                         if isinstance(result.citations, list)
                         else None,
                     )
-                    reply = f"{result.content}\n{footer}".strip()
+                    reply = f"{reply_body}\n{footer}".strip()
                 logger.info("Grok response received for user=%s", message.author.id)
             except Exception:
                 logger.exception("Grok API call failed")
@@ -620,7 +622,7 @@ class GrokDiscordBot(discord.Client):
             await self._log_exchange(
                 message=message,
                 user_content=content_for_context,
-                assistant_content=reply,
+                assistant_content=reply_body or reply,
             )
             self._memory.append(
                 key,
@@ -631,7 +633,10 @@ class GrokDiscordBot(discord.Client):
                     ),
                 },
             )
-            self._memory.append(key, {"role": "assistant", "content": reply})
+            self._memory.append(
+                key,
+                {"role": "assistant", "content": reply_body or reply},
+            )
 
             for chunk in _chunk_text(reply):
                 await message.reply(chunk, mention_author=False)
